@@ -1,10 +1,17 @@
-
-
 import networkx as nx
-import numpy as np
-import pulp
-import matplotlib.pyplot as plt
+import random
 from collections import Counter
+from operator import itemgetter
+import numpy as np
+import matplotlib.pyplot as plt
+import pulp
+import urllib.request
+import io
+import zipfile
+
+
+
+
 
 def anonymize_degree_sequence(G, k, t):
     
@@ -34,89 +41,138 @@ def anonymize_degree_sequence(G, k, t):
     return new_degrees[:n] # Return only n degrees (remove padding if any)
 
 
-def ilp_graph_realization(G, target_degrees):
-    
-    G_prime = G.copy()  # Work on a copy
-    current_degrees = dict(G.degree())
-    
-    # Calculate required degree changes for each node
-    degree_changes = {node: target_degrees[i] - current_degrees[node] 
-                     for i, node in enumerate(G.nodes())}
 
-    # Setup ILP problem
-    prob = pulp.LpProblem("Graph_Realization", pulp.LpMinimize)
-    
-    # All possible edges to add (non-edges) and remove (existing edges)
-    edges = list(nx.non_edges(G)) + list(G.edges())
-    
-    # Binary variables for each possible edge modification
-    x = {e: pulp.LpVariable(f"x_{e[0]}_{e[1]}", cat=pulp.LpBinary) for e in edges}
 
-    # Objective: minimize total edge modifications
-    prob += pulp.lpSum(x[e] for e in edges)
+# Step 3: ILP - splitting model
+def ilp_vertex_split_realization(G, k, t):
+    G = G.copy()
+   
+    target_degrees = anonymize_degree_sequence(G, k, t)
+    nodes = list(G.nodes())
+    actual_degrees = dict(G.degree())
+    degree_diff = {
+        node: actual_degrees[node] - target_degrees[i]
+        for i, node in enumerate(nodes)
+    }
 
-    # Constraints: net degree change must match target for each node
-    for node in G.nodes():
-        prob += (
-            pulp.lpSum(x[e] for e in edges if node in e) == degree_changes[node]
-        )
+    # Directly identify nodes that need splitting
+    to_split = [node for node in nodes if degree_diff[node] > 0]
 
-    # Solve the ILP
+    print(f"Nodes to split for k={k}, t={t}: {to_split}")
+
+    # 1. Generate target degree sequence
+    target_degrees = anonymize_degree_sequence(G, k, t)
+    nodes = list(G.nodes())
+    actual_degrees = dict(G.degree())
+    degree_diff = {
+        node: actual_degrees[node] - target_degrees[i]
+        for i, node in enumerate(nodes)
+    }
+
+    # ILP model: minimize number of splits
+    prob = pulp.LpProblem("Vertex_Splitting", pulp.LpMinimize)
+    split_vars = {v: pulp.LpVariable(f"split_{v}", cat='Binary') for v in to_split}
+
+    # 2. Force splits when degree > target
+    for node in to_split:
+        if degree_diff[node] > 0:
+            prob += split_vars[node] == 1, f"must_split_{node}"
+
+    # 3. Objective: minimize optional splits
+    prob += pulp.lpSum(split_vars[v] for v in to_split)
+
     prob.solve(pulp.PULP_CBC_CMD(msg=False))
 
-    # Apply the solution to the graph
-    for e in edges:
-        if x[e].varValue == 1:  # If edge modification is selected
-            if G_prime.has_edge(*e):
-                G_prime.remove_edge(*e)  # Delete existing edge
-            else:
-                G_prime.add_edge(*e)  # Add new edge
-
-    return G_prime
+    # Apply splits
+    G_prime = G.copy()
+    split_map = {}
+    for v in to_split:
+        if split_vars[v].varValue == 1:
+            neighbors = list(G_prime.neighbors(v))
+            G_prime.remove_node(v)
 
 
-def plot_graph():
-    # Create a random graph with 8 nodes and 40% connection probability
-    G = nx.erdos_renyi_graph(8, 0.4)
-    
-    # Anonymization parameters
-    k = 3  # Each degree should appear at least k times
-    t = 3  # Degrees can vary ±t from group average
+            # splits the node into two nodes, v1 taking half, the rest goes to v2
+            mid = len(neighbors) // 2
+            v1, v2 = f"{v}_1", f"{v}_2"
+            G_prime.add_node(v1)
+            G_prime.add_node(v2)
+            for u in neighbors[:mid]:
+                G_prime.add_edge(v1, u)
+            for u in neighbors[mid:]:
+                G_prime.add_edge(v2, u)
 
-    print("Original Degree Sequence:", sorted([d for _, d in G.degree()], reverse=True))
+            split_map[v] = [v1, v2]
 
-    # Generate anonymized degree sequence
-    new_degrees = anonymize_degree_sequence(G, k, t)
-    print("Anonymized Degree Sequence:", new_degrees)
+    print("Original Degree Sequence:", sorted(actual_degrees.values(), reverse=True))
+    print("New Degree Sequence:", sorted([deg for _, deg in G_prime.degree()], reverse=True))
 
-    # Create anonymized graph
-    G_anonymized = ilp_graph_realization(G, new_degrees)
-    
-    # Print comparison statistics
-    print("Final Degree Sequence:", sorted([d for _, d in G_anonymized.degree()], reverse=True))
-    print(f"Number of nodes (Original): {G.number_of_nodes()}, (Anonymized): {G_anonymized.number_of_nodes()}")
-    print(f"Number of edges (Original): {G.number_of_edges()}, (Anonymized): {G_anonymized.number_of_edges()}")
-    print(f'Average degree (Original): {np.mean([d for n, d in G.degree()]):.2f}, (Anonymized): {np.mean([d for n, d in G_anonymized.degree()]):.2f}')
-    print(f'Degree distribution (Original): {dict(Counter(sorted([d for n, d in G.degree()], reverse=True)))}')
+    return G, G_prime, split_map
 
-    # Check connectivity and path lengths
-    if nx.is_connected(G) and nx.is_connected(G_anonymized):
-        print(f"Average shortest path (Original): {nx.average_shortest_path_length(G):.3f}, (Anonymized): {nx.average_shortest_path_length(G_anonymized):.3f}")
-    else:
-        print("Graphs are not connected, average shortest path cannot be computed.")
-    
-    print(f'Maximum degree (Original): {max(dict(G.degree()).values())}, (Anonymized): {max(dict(G_anonymized.degree()).values())}')
 
-    # Visualization
-    plt.figure(figsize=(12, 5))
-    plt.subplot(1, 2, 1)
-    nx.draw(G, with_labels=True, node_color='lightblue', edge_color='gray')
-    plt.title("Original Graph")
 
-    plt.subplot(1, 2, 2)
-    nx.draw(G_anonymized, with_labels=True, node_color='lightgreen', edge_color='gray')
-    plt.title("Anonymized Graph")
 
+def visualize_graphs(G_orig, G_split, split_map):
+    pos = nx.spring_layout(G_orig)
+    fig, axs = plt.subplots(1, 2, figsize=(12, 6))
+
+    axs[0].set_title("Original Graph")
+    nx.draw(G_orig, pos, ax=axs[0], with_labels=True, node_color="lightblue", edge_color='gray')
+
+    axs[1].set_title("Anonymized (Vertex-Split) Graph")
+    pos_prime = nx.spring_layout(G_split, seed=42)
+    colors = ['lightblue' if not any(n in v for v in split_map.values()) else 'orange' for n in G_split.nodes()]
+    nx.draw(G_split, pos_prime, ax=axs[1], with_labels=True, node_color=colors, edge_color='gray')
+
+    plt.tight_layout()
     plt.show()
     
-plot_graph()
+    
+def verify_k_t_anonymity(G):
+    degrees = [deg for _, deg in G.degree()]
+    node_deg = dict(G.degree())
+
+    violations = []
+
+    for node, d in node_deg.items():
+        # Count how many nodes (including itself) have degree within ±t
+        in_group = sum(1 for deg in degrees if abs(deg - d) <= t)
+        if in_group < k:
+            violations.append((node, d, in_group))
+
+    if not violations:
+        print(f"✅ The graph satisfies ({k}, {t}) degree anonymity.")
+    else:
+        print(f"❌ The graph violates ({k}, {t}) degree anonymity at {len(violations)} node(s):")
+        for node, deg, count in violations:
+            print(f"  - Node {node} (deg={deg}) only has {count} nodes within ±{t} of its degree.")
+
+    return violations
+  
+
+
+
+# Anonymization parameters
+ 
+# k=3
+# t=2
+
+
+# url = "http://www-personal.umich.edu/~mejn/netdata/football.zip"
+
+# sock = urllib.request.urlopen(url)  # open URL
+# s = io.BytesIO(sock.read())  # read into BytesIO "file"
+# sock.close()
+
+# zf = zipfile.ZipFile(s)  # zipfile object
+# txt = zf.read("football.txt").decode()  # read info file
+# gml = zf.read("football.gml").decode()  # read gml data
+# # throw away bogus first line with # from mejn files
+# gml = gml.split("\n")[1:]
+# G = nx.parse_gml(gml)
+
+G =nx.erdos_renyi_graph(15,0.4, seed=42)  # Example graph
+G_orig, G_anonymized, split_map = ilp_vertex_split_realization(G, k, t)
+violations = verify_k_t_anonymity(G_anonymized)
+visualize_graphs(G_orig, G_anonymized, split_map)
+
