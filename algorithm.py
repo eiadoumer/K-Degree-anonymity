@@ -141,9 +141,9 @@ def verify_k_t_anonymity(G):
             violations.append((node, d, in_group))
 
     if not violations:
-        print(f"✅ The graph satisfies ({k}, {t}) degree anonymity.")
+        print(f" The graph satisfies ({k}, {t}) degree anonymity.")
     else:
-        print(f"❌ The graph violates ({k}, {t}) degree anonymity at {len(violations)} node(s):")
+        print(f" The graph violates ({k}, {t}) degree anonymity at {len(violations)} node(s):")
         for node, deg, count in violations:
             print(f"  - Node {node} (deg={deg}) only has {count} nodes within ±{t} of its degree.")
 
@@ -154,8 +154,8 @@ def verify_k_t_anonymity(G):
 
 # Anonymization parameters
  
-# k=3
-# t=2
+k=3
+t=2
 
 
 # url = "http://www-personal.umich.edu/~mejn/netdata/football.zip"
