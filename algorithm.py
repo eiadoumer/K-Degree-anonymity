@@ -8,6 +8,9 @@ import pulp
 import urllib.request
 import io
 import zipfile
+import time
+start_time = time.time()
+
 
 
 def anonymize_degree_sequence(G, k, t):
@@ -31,8 +34,8 @@ def anonymize_degree_sequence(G, k, t):
         group = degrees[i:i + k]
 
         if len(group) < k:
-            new_degrees.extend([new_degrees[-1]] * (k - len(group)))
-            new_degrees.extend(group)
+    # Just assign remaining nodes to previous group's degree
+            new_degrees.extend([new_degrees[-1]] * len(group))
             break
 
         avg_degree = np.mean(group)
@@ -84,14 +87,24 @@ def ilp_vertex_split_realization(G, k, t):
         if split_vars[v].varValue == 1:
             neighbors = list(G_prime.neighbors(v))
             G_prime.remove_node(v)
-          # First half of nodes gets assigned to v_1, and the rest goes to v_2
-            mid = len(neighbors) // 2
+
+            # Try all 2-partitions and pick the one with most balanced degrees
+            best_split = None
+            best_diff = float('inf')
+            for i in range(1, len(neighbors)):
+                part1 = neighbors[:i]
+                part2 = neighbors[i:]
+                diff = abs(len(part1) - len(part2))
+                if diff < best_diff:
+                    best_split = (part1, part2)
+                    best_diff = diff
+
             v1, v2 = f"{v}_1", f"{v}_2"
             G_prime.add_node(v1)
             G_prime.add_node(v2)
-            for u in neighbors[:mid]:
+            for u in best_split[0]:
                 G_prime.add_edge(v1, u)
-            for u in neighbors[mid:]:
+            for u in best_split[1]:
                 G_prime.add_edge(v2, u)
 
             split_map[v] = [v1, v2]
@@ -144,6 +157,8 @@ def verify_k_t_anonymity(G):
         in_group = sum(1 for deg in degrees if abs(deg - d) <= t)
         if in_group < k:
             violations.append((node, d, in_group))
+            
+        
 
     if not violations:
         print(f" The graph satisfies ({k}, {t}) degree anonymity.")
@@ -157,13 +172,20 @@ def verify_k_t_anonymity(G):
 
 # --- Parameters and Execution ---
 
-k = 3  # Minimum number of similar-degree nodes
-t = 2  # Degree tolerance
+k = 4  # Minimum number of similar-degree nodes
+t = 5  # Degree tolerance
 
 # Generate example graph
-G = nx.erdos_renyi_graph(8, 0.4, seed=42)
+G = nx.erdos_renyi_graph(1000, 0.4, seed=42)
+
 
 # Run anonymization
 G_orig, G_anonymized, split_map = ilp_vertex_split_realization(G, k, t)
 violations = verify_k_t_anonymity(G_anonymized)
-visualize_graphs(G_orig, G_anonymized, split_map)
+print(violations)
+
+if len(G_orig.nodes()) < 100:
+    visualize_graphs(G_orig, G_anonymized, split_map)
+else:
+    print("Graph too large to visualize.")
+print("--- %s seconds to Run ---" % (time.time() - start_time))
